@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aplikasi Invoice & Stok - Copnroll.id</title>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
+    <style>
+        @media print {
+            body * { visibility: hidden; }
+            #invoice-preview, #invoice-preview * { visibility: visible; }
+            #invoice-preview {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+                box-shadow: none !important;
+            }
+            .no-print { display: none !important; }
+        }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #fafaf9; }
+        ::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 4px; }
+    </style>
+</head>
+<body class="bg-stone-100 text-stone-800 font-sans h-screen flex flex-col overflow-hidden">
+
+    <div id="root" class="flex-1 flex flex-col overflow-hidden"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const formatRupiah = (number) => {
+            return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number || 0);
+        };
+
+        const loadLocalData = (key, defaultData) => {
+            try {
+                const stored = localStorage.getItem(key);
+                return stored ? JSON.parse(stored) : defaultData;
+            } catch (e) {
+                console.error("Gagal memuat data lokal:", e);
+                return defaultData;
+            }
+        };
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('editor');
+            const [notif, setNotif] = useState({ show: false, message: '', type: 'success' });
+            
+            // State untuk Custom Confirm Dialog
+            const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, message: '', onConfirm: null });
+
+            const askConfirm = (message, onConfirm) => {
+                setConfirmDialog({ isOpen: true, message, onConfirm });
+            };
+
+            // --- STATE: MASTER PELANGGAN ---
+            const [customers, setCustomers] = useState(() => loadLocalData('copnroll_customers', [
+                { id: 'c1', name: 'Stones Adventure', phone: '6281234567890' }
+            ]));
+
+            // --- STATE: MASTER STOK & HPP ---
+            const [products, setProducts] = useState(() => loadLocalData('copnroll_products', [
+                { id: 'p1', name: 'Kaos Hitam Pendek L', stock: 150, unit: 'Pcs', hpp: 35000, price: 55000 },
+                { id: 'p2', name: 'Kaos Abu Misty Pendek M', stock: 80, unit: 'Pcs', hpp: 37000, price: 60000 },
+            ]));
+
+            // --- STATE: DATA INVOICE ---
+            const [data, setData] = useState(() => loadLocalData('copnroll_data', {
+                customerName: '',
+                customerPhone: '',
+                orderType: '',
+                orderDate: new Date().toISOString().split('T')[0],
+                dpAmount: 0,
+                dpDate: new Date().toISOString().split('T')[0],
+                webhookUrl: '',
+                bankNumber: '618701017099535',
+                bankAccountName: 'Eko Adi Setiawan',
+                bankName: 'BRI',
+                notes: 'DP minimal 70% dari total pesanan\nPelunasan di waktu pengambilan pesanan',
+                signatureName: 'Eko Gitara',
+                logo: null
+            }));
+
+            // --- STATE: ITEM INVOICE ---
+            const [items, setItems] = useState(() => loadLocalData('copnroll_items', [
+                { id: 1, productId: '', name: '', qty: 1, unit: 'Pcs', hpp: 0, price: 0 },
+            ]));
+
+            // --- EFEK: MENYIMPAN OTOMATIS KE LOCALSTORAGE ---
+            useEffect(() => { localStorage.setItem('copnroll_customers', JSON.stringify(customers)); }, [customers]);
+            useEffect(() => { localStorage.setItem('copnroll_products', JSON.stringify(products)); }, [products]);
+            useEffect(() => { localStorage.setItem('copnroll_items', JSON.stringify(items)); }, [items]);
+            useEffect(() => {
+                try {
+                    localStorage.setItem('copnroll_data', JSON.stringify(data));
+                } catch (e) {
+                    console.warn("Storage penuh, menyimpan tanpa gambar logo...");
+                    const dataWithoutLogo = { ...data, logo: null };
+                    localStorage.setItem('copnroll_data', JSON.stringify(dataWithoutLogo));
+                }
+            }, [data]);
+
+            // --- KALKULASI KEUANGAN (Otomatis) ---
+            const { subtotal, totalHPP, remainingTotal, profit } = useMemo(() => {
+                let sub = 0;
+                let hppTotal = 0;
+                items.forEach(item => {
+                    sub += (item.qty * item.price);
+                    hppTotal += (item.qty * (item.hpp || 0));
+                });
+                return {
+                    subtotal: sub,
+                    totalHPP: hppTotal,
+                    remainingTotal: sub - data.dpAmount,
+                    profit: sub - hppTotal
+                };
+            }, [items, data.dpAmount]);
+
+            const showNotification = (message, type = 'success') => {
+                setNotif({ show: true, message, type });
+                setTimeout(() => setNotif({ show: false, message: '', type: 'success' }), 3000);
+            };
+
+            // --- HANDLERS: MASTER PELANGGAN ---
+            const handleCustomerChange = (id, field, value) => setCustomers(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
+            const addCustomer = () => setCustomers([{ id: `c${Date.now()}`, name: '', phone: '' }, ...customers]);
+            const removeCustomer = (id) => askConfirm('Hapus pelanggan ini?', () => setCustomers(prev => prev.filter(c => c.id !== id)));
+            const saveToCustomerDB = () => {
+                if (!data.customerName || !data.customerPhone) return showNotification("Nama dan No WA harus diisi!", "error");
+                if (customers.find(c => c.name.toLowerCase() === data.customerName.toLowerCase())) return showNotification("Pelanggan sudah ada!", "info");
+                setCustomers([{ id: `c${Date.now()}`, name: data.customerName, phone: data.customerPhone }, ...customers]);
+                showNotification("Tersimpan ke Database Pelanggan!");
+            };
+
+            // --- HANDLERS: MASTER STOK ---
+            const handleProductChange = (id, field, value) => setProducts(prev => prev.map(p => p.id === id ? { ...p, [field]: (field === 'name' || field === 'unit') ? value : Number(value) } : p));
+            const addProduct = () => setProducts([{ id: `p${Date.now()}`, name: '', stock: 0, unit: 'Pcs', hpp: 0, price: 0 }, ...products]);
+            const removeProduct = (id) => askConfirm('Hapus produk ini?', () => setProducts(prev => prev.filter(p => p.id !== id)));
+
+            // --- HANDLERS: INVOICE & LOGO ---
+            const handleDataChange = (e) => setData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+            const handleLogoUpload = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        const img = new Image();
+                        img.onload = () => {
+                            const canvas = document.createElement('canvas');
+                            const MAX = 500;
+                            let { width, height } = img;
+                            if (width > height && width > MAX) { height *= MAX / width; width = MAX; } 
+                            else if (height > MAX) { width *= MAX / height; height = MAX; }
+                            canvas.width = width; canvas.height = height;
+                            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                            setData(prev => ({ ...prev, logo: canvas.toDataURL('image/png', 0.85) }));
+                            showNotification("Logo berhasil diunggah!");
+                        };
+                        img.src = reader.result;
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const addItem = () => setItems([...items, { id: Date.now(), productId: '', name: '', qty: 1, unit: 'Pcs', hpp: 0, price: 0 }]);
+            const removeItem = (id) => setItems(items.filter(item => item.id !== id));
+            const handleItemChange = (id, field, value) => {
+                setItems(prev => prev.map(item => {
+                    if (item.id === id) {
+                        if (field === 'productId') {
+                            const p = products.find(prod => prod.id === value);
+                            return p ? { ...item, productId: value, name: p.name, unit: p.unit || 'Pcs', hpp: p.hpp, price: p.price } : { ...item, productId: '', name: '', hpp: 0, price: 0 };
+                        }
+                        return { ...item, [field]: (field === 'name' || field === 'unit') ? value : Number(value) };
+                    }
+                    return item;
+                }));
+            };
+
+            // --- FUNGSI POTONG STOK ---
+            const deductStock = () => {
+                const validItems = items.filter(i => i.productId);
+                if (validItems.length === 0) return showNotification("Belum ada produk yang dipilih!", "error");
+
+                let hasError = false;
+                let errorMessage = "";
+
+                // Cek apakah stok cukup sebelum memotong
+                validItems.forEach(item => {
+                    const p = products.find(prod => prod.id === item.productId);
+                    if (p && Number(p.stock) < Number(item.qty)) {
+                        hasError = true;
+                        errorMessage = `Stok ${p.name} tidak cukup! (Sisa: ${p.stock})`;
+                    }
+                });
+
+                if (hasError) return showNotification(errorMessage, "error");
+
+                // Menggunakan dialog konfirmasi kustom agar tidak terblokir di iFrame/Preview
+                askConfirm("Potong stok dari database Master Stok secara permanen untuk invoice ini?", () => {
+                    setProducts(prevProducts => prevProducts.map(p => {
+                        // Jumlahkan semua qty untuk produk ini
+                        const qtyToDeduct = validItems.reduce((sum, item) => item.productId === p.id ? sum + Number(item.qty) : sum, 0);
+                        if (qtyToDeduct > 0) {
+                            return { ...p, stock: Number(p.stock) - qtyToDeduct };
+                        }
+                        return p;
+                    }));
+
+                    showNotification("Stok berhasil dikurangi dari Master Stok!");
+                    
+                    // Menawarkan reset invoice
+                    setTimeout(() => {
+                        askConfirm("Invoice selesai. Ingin membersihkan form untuk invoice baru?", () => resetData(true));
+                    }, 500);
+                });
+            };
+
+            const generateTextInvoice = () => {
+                let text = `*INVOICE PESANAN - COPNROLL.ID*\n-------------------------------------------\n`;
+                text += `Pelanggan : ${data.customerName}\nTanggal   : ${data.orderDate}\nJenis     : ${data.orderType}\n\n*Rincian Produk:*\n`;
+                items.forEach((item, index) => { if(item.name) text += `${index + 1}. ${item.name} (${item.qty} ${item.unit}) = ${formatRupiah(item.qty * item.price)}\n`; });
+                text += `\n*Subtotal :* ${formatRupiah(subtotal)}\n*DP       :* ${formatRupiah(data.dpAmount)} (${data.dpDate})\n*Sisa     :* ${formatRupiah(remainingTotal)}\n`;
+                text += `-------------------------------------------\n*Metode Pembayaran Transfer:* \n${data.bankName} - ${data.bankNumber}\na/n ${data.bankAccountName}\n\n`;
+                text += `Catatan: ${data.notes.replace(/\n/g, ' ')}`;
+                return text;
+            };
+
+            const copyToClipboard = () => {
+                navigator.clipboard.writeText(generateTextInvoice()).then(() => showNotification("Rincian disalin!")).catch(() => showNotification("Gagal menyalin", "error"));
+            };
+
+            const sendWhatsApp = () => {
+                if(!data.customerPhone) return showNotification("Nomor WA kosong!", "error");
+                window.open(`https://wa.me/${data.customerPhone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(generateTextInvoice())}`, '_blank');
+            };
+
+            const shareAsImage = async () => {
+                const element = document.getElementById('invoice-preview');
+                if (!element) return;
+                try {
+                    showNotification("Memproses gambar...", "info");
+                    const canvas = await html2canvas(element, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+                    const dataUrl = canvas.toDataURL('image/png');
+                    if (navigator.share) {
+                        try {
+                            const response = await fetch(dataUrl);
+                            const file = new File([await response.blob()], `Invoice-${data.customerName}.png`, { type: 'image/png' });
+                            await navigator.share({ title: 'Invoice Pesanan', text: `Invoice untuk ${data.customerName}`, files: [file] });
+                            return showNotification("Berhasil dibagikan!");
+                        } catch (err) { console.log("Share dibatalkan", err); }
+                    }
+                    const link = document.createElement('a');
+                    link.download = `Invoice-${data.customerName.replace(/\s+/g, '-')}.png`;
+                    link.href = dataUrl; link.click();
+                    showNotification("Gambar diunduh!");
+                } catch (error) { showNotification("Gagal membuat gambar", "error"); }
+            };
+
+            const saveToSheet = async () => {
+                if (!data.webhookUrl) return showNotification("URL Webhook Google Sheet belum diisi!", "error");
+                const payload = {
+                    tanggal: data.orderDate,
+                    pelanggan: data.customerName,
+                    no_wa: data.customerPhone,
+                    jenis_order: data.orderType,
+                    subtotal: subtotal,
+                    dp: data.dpAmount,
+                    sisa: remainingTotal,
+                    laba_kotor: profit,
+                    items_json: JSON.stringify(items.map(i => ({ nama: i.name, qty: i.qty, harga: i.price, total: i.qty * i.price })))
+                };
+                try {
+                    showNotification("Sedang menyimpan data ke Sheet...", "info");
+                    await fetch(data.webhookUrl, {
+                        method: 'POST',
+                        mode: 'no-cors',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    showNotification("Data berhasil dikirim ke Google Sheet!");
+                } catch (error) { showNotification("Gagal mengirim data.", "error"); }
+            };
+
+            const resetData = (skipConfirm = false) => {
+                const isSkip = typeof skipConfirm === 'boolean' ? skipConfirm : false;
+                const action = () => {
+                    setData(prev => ({ ...prev, customerName: '', customerPhone: '', orderType: '', dpAmount: 0 }));
+                    setItems([{ id: Date.now(), productId: '', name: '', qty: 1, unit: 'Pcs', hpp: 0, price: 0 }]);
+                    if (!isSkip) showNotification("Form invoice dibersihkan!");
+                };
+
+                if(isSkip) {
+                    action();
+                } else {
+                    askConfirm("Kosongkan form invoice? (Data stok aman)", action);
+                }
+            };
+
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [activeTab, items, products, customers, confirmDialog]);
+
+            return (
+                <div className="flex flex-col h-full overflow-hidden relative">
+                    
+                    {}
+                    {confirmDialog.isOpen && (
+                        <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4 backdrop-blur-sm">
+                            <div className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full space-y-4 border border-stone-100 transform transition-all scale-100 opacity-100">
+                                <h3 className="text-lg font-bold text-stone-900 flex items-center gap-2">
+                                    <i data-lucide="help-circle" className="text-yellow-500 w-6 h-6"></i> Konfirmasi
+                                </h3>
+                                <p className="text-stone-600 text-sm leading-relaxed">{confirmDialog.message}</p>
+                                <div className="flex gap-3 justify-end pt-3">
+                                    <button onClick={() => setConfirmDialog({ isOpen: false, message: '', onConfirm: null })} className="px-4 py-2 bg-stone-100 text-stone-700 rounded-lg hover:bg-stone-200 text-sm font-bold transition">Batal</button>
+                                    <button onClick={() => {
+                                        if(confirmDialog.onConfirm) confirmDialog.onConfirm();
+                                        setConfirmDialog({ isOpen: false, message: '', onConfirm: null });
+                                    }} className="px-4 py-2 bg-gradient-to-r from-yellow-500 to-yellow-600 text-white rounded-lg hover:from-yellow-600 hover:to-yellow-700 text-sm font-bold transition shadow">Ya, Lanjutkan</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Notifikasi */}
+                    {notif.show && (
+                        <div className={`fixed top-4 right-4 left-4 md:left-auto z-50 p-3 rounded-lg shadow-xl flex items-center text-white text-sm ${notif.type === 'error' ? 'bg-red-600' : notif.type === 'info' ? 'bg-blue-600' : 'bg-gradient-to-r from-yellow-500 to-yellow-600'}`}>
+                            {notif.message}
+                        </div>
+                    )}
+
+                    {}
+                    {/* Navigasi Utama */}
+                    <div className="bg-white border-b border-stone-200 text-stone-800 flex shrink-0 no-print overflow-x-auto whitespace-nowrap shadow-sm relative z-10">
+                        <button onClick={() => setActiveTab('customer')} className={`flex-1 py-3 px-4 text-xs sm:text-sm font-bold flex justify-center items-center gap-1 sm:gap-2 border-b-4 transition-colors ${activeTab === 'customer' ? 'border-yellow-500 text-yellow-600 bg-yellow-50/50' : 'border-transparent text-stone-500 hover:bg-yellow-50/30 hover:text-yellow-600'}`}>
+                            <i data-lucide="users" className="w-4 h-4"></i> <span className="hidden sm:inline">1. </span>Pelanggan
+                        </button>
+                        <button onClick={() => setActiveTab('stock')} className={`flex-1 py-3 px-4 text-xs sm:text-sm font-bold flex justify-center items-center gap-1 sm:gap-2 border-b-4 transition-colors ${activeTab === 'stock' ? 'border-yellow-500 text-yellow-600 bg-yellow-50/50' : 'border-transparent text-stone-500 hover:bg-yellow-50/30 hover:text-yellow-600'}`}>
+                            <i data-lucide="package" className="w-4 h-4"></i> <span className="hidden sm:inline">2. </span>Stok
+                        </button>
+                        <button onClick={() => setActiveTab('editor')} className={`flex-1 py-3 px-4 text-xs sm:text-sm font-bold flex justify-center items-center gap-1 sm:gap-2 border-b-4 transition-colors ${activeTab === 'editor' ? 'border-yellow-500 text-yellow-600 bg-yellow-50/50' : 'border-transparent text-stone-500 hover:bg-yellow-50/30 hover:text-yellow-600'}`}>
+                            <i data-lucide="edit-3" className="w-4 h-4"></i> <span className="hidden sm:inline">3. </span>Invoice
+                        </button>
+                        <button onClick={() => setActiveTab('preview')} className={`flex-1 py-3 px-4 text-xs sm:text-sm font-bold flex justify-center items-center gap-1 sm:gap-2 border-b-4 transition-colors ${activeTab === 'preview' ? 'border-yellow-500 text-yellow-600 bg-yellow-50/50' : 'border-transparent text-stone-500 hover:bg-yellow-50/30 hover:text-yellow-600'}`}>
+                            <i data-lucide="eye" className="w-4 h-4"></i> <span className="hidden sm:inline">4. </span>Pratinjau
+                        </button>
+                    </div>
+
+                    <div className="flex-1 flex overflow-hidden">
+                        
+                        {}
+                        {/* TAB 1: MASTER PELANGGAN */}
+                        <div className={`w-full bg-stone-50 flex flex-col h-full overflow-hidden no-print ${activeTab === 'customer' ? 'flex' : 'hidden'}`}>
+                            <div className="p-4 sm:p-6 overflow-y-auto w-full max-w-4xl mx-auto space-y-4">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-xl shadow-sm border border-stone-200 gap-4">
+                                    <div>
+                                        <h2 className="text-lg font-black text-stone-800 flex items-center gap-2"><i data-lucide="users" className="text-yellow-600"></i> Database Pelanggan</h2>
+                                        <p className="text-xs text-stone-500 mt-1">Simpan kontak pelanggan agar lebih cepat mengisi invoice.</p>
+                                    </div>
+                                    <button onClick={addCustomer} className="px-4 py-2 bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-600 text-white text-sm font-bold rounded-lg shadow hover:shadow-md hover:from-yellow-500 hover:via-yellow-600 hover:to-yellow-700 flex items-center gap-2 w-full sm:w-auto justify-center transition-all">
+                                        <i data-lucide="user-plus" className="w-4 h-4"></i> Tambah Pelanggan
+                                    </button>
+                                </div>
+                                <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="bg-stone-100 text-stone-600 text-xs uppercase font-bold">
+                                                <tr>
+                                                    <th className="px-4 py-3 w-1/2">Nama Pelanggan</th>
+                                                    <th className="px-4 py-3 w-1/2">No. WhatsApp</th>
+                                                    <th className="px-4 py-3 w-16 text-center">Aksi</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-stone-100">
+                                                {customers.map(c => (
+                                                    <tr key={c.id} className="hover:bg-stone-50">
+                                                        <td className="px-4 py-2"><input type="text" value={c.name} onChange={(e) => handleCustomerChange(c.id, 'name', e.target.value)} placeholder="Nama Pelanggan" className="w-full p-2 border border-stone-200 rounded focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none" /></td>
+                                                        <td className="px-4 py-2"><input type="text" value={c.phone} onChange={(e) => handleCustomerChange(c.id, 'phone', e.target.value)} placeholder="628..." className="w-full p-2 border border-stone-200 rounded focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none" /></td>
+                                                        <td className="px-4 py-2 text-center"><button onClick={() => removeCustomer(c.id)} className="text-red-500 hover:text-red-700 p-2"><i data-lucide="trash-2" className="w-4 h-4"></i></button></td>
+                                                    </tr>
+                                                ))}
+                                                {customers.length === 0 && <tr><td colSpan="3" className="text-center py-8 text-stone-400">Belum ada database pelanggan.</td></tr>}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {}
+                        {/* TAB 2: MASTER STOK */}
+                        <div className={`w-full bg-stone-50 flex flex-col h-full overflow-hidden no-print ${activeTab === 'stock' ? 'flex' : 'hidden'}`}>
+                            <div className="p-4 sm:p-6 overflow-y-auto w-full max-w-6xl mx-auto space-y-4">
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-xl shadow-sm border border-stone-200 gap-4">
+                                    <div>
+                                        <h2 className="text-lg font-black text-stone-800 flex items-center gap-2"><i data-lucide="package-search" className="text-yellow-600"></i> Master Produk & Stok</h2>
+                                        <p className="text-xs text-stone-500 mt-1">Data yang diisi otomatis tersimpan.</p>
+                                    </div>
+                                    <button onClick={addProduct} className="px-4 py-2 bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-600 text-white text-sm font-bold rounded-lg shadow hover:shadow-md hover:from-yellow-500 hover:via-yellow-600 hover:to-yellow-700 flex items-center gap-2 w-full sm:w-auto justify-center transition-all">
+                                        <i data-lucide="plus" className="w-4 h-4"></i> Tambah Produk
+                                    </button>
+                                </div>
+                                <div className="bg-white rounded-xl shadow-sm border border-stone-200 overflow-hidden">
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-sm text-left min-w-[800px]">
+                                            <thead className="bg-stone-100 text-stone-600 text-xs uppercase font-bold">
+                                                <tr>
+                                                    <th className="px-4 py-3 w-1/3 min-w-[300px]">Nama Produk</th>
+                                                    <th className="px-4 py-3 w-24">Stok</th>
+                                                    <th className="px-4 py-3 w-32">Satuan</th>
+                                                    <th className="px-4 py-3 w-36">HPP (Modal)</th>
+                                                    <th className="px-4 py-3 w-36">Harga Jual</th>
+                                                    <th className="px-4 py-3 w-16 text-center">Aksi</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-stone-100">
+                                                {products.map(p => (
+                                                    <tr key={p.id} className="hover:bg-stone-50">
+                                                        <td className="px-4 py-2"><input type="text" value={p.name} onChange={(e) => handleProductChange(p.id, 'name', e.target.value)} placeholder="Nama/SKU" className="w-full p-2 border border-stone-200 rounded focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none" /></td>
+                                                        <td className="px-4 py-2"><input type="number" value={p.stock} onChange={(e) => handleProductChange(p.id, 'stock', e.target.value)} className="w-full p-2 border border-stone-200 rounded text-center focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none" /></td>
+                                                        <td className="px-4 py-2">
+                                                            <select value={p.unit || 'Pcs'} onChange={(e) => handleProductChange(p.id, 'unit', e.target.value)} className="w-full p-2 border border-stone-200 rounded focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none bg-white">
+                                                                <option value="Pcs">Pcs</option><option value="Lusin">Lusin</option><option value="Kodi">Kodi</option><option value="Rim">Rim</option><option value="Gross">Gross</option><option value="Set">Set</option><option value="Pasang">Pasang</option><option value="Pack">Pack</option><option value="Box">Box</option><option value="Roll">Roll</option><option value="Meter">Meter</option><option value="Cm">Cm</option><option value="Kg">Kg</option><option value="Gram">Gram</option><option value="Liter">Liter</option><option value="Lembar">Lembar</option><option value="Botol">Botol</option>
+                                                            </select>
+                                                        </td>
+                                                        <td className="px-4 py-2 relative"><span className="absolute left-6 top-4 text-stone-400 text-xs">Rp</span><input type="number" value={p.hpp} onChange={(e) => handleProductChange(p.id, 'hpp', e.target.value)} className="w-full p-2 pl-7 border border-stone-200 rounded text-right focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none" /></td>
+                                                        <td className="px-4 py-2 relative"><span className="absolute left-6 top-4 text-stone-400 text-xs">Rp</span><input type="number" value={p.price} onChange={(e) => handleProductChange(p.id, 'price', e.target.value)} className="w-full p-2 pl-7 border border-stone-200 rounded text-right focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500 outline-none" /></td>
+                                                        <td className="px-4 py-2 text-center"><button onClick={() => removeProduct(p.id)} className="text-red-500 hover:text-red-700 p-2"><i data-lucide="trash-2" className="w-4 h-4"></i></button></td>
+                                                    </tr>
+                                                ))}
+                                                {products.length === 0 && <tr><td colSpan="6" className="text-center py-8 text-stone-400">Belum ada data produk.</td></tr>}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {}
+                        {/* TAB 3: EDITOR INVOICE */}
+                        <div className={`w-full md:w-5/12 lg:w-4/12 bg-white border-r border-stone-200 flex-col h-full overflow-hidden no-print ${activeTab === 'editor' ? 'flex' : 'hidden md:flex'}`}>
+                            <div className="p-4 overflow-y-auto flex-1 space-y-5 bg-stone-50">
+                                
+                                {/* Info & Logo */}
+                                <div className="space-y-3 bg-white p-4 rounded-xl shadow-sm border border-stone-100 relative">
+                                    <button onClick={resetData} className="absolute top-4 right-4 text-xs font-bold text-stone-400 hover:text-yellow-600 flex items-center gap-1"><i data-lucide="rotate-ccw" className="w-3 h-3"></i> Reset</button>
+                                    <h3 className="font-bold text-stone-700 text-sm flex items-center border-b pb-2 text-yellow-600"><i data-lucide="user" className="mr-2 h-4 w-4"></i> INFO INVOICE & PELANGGAN</h3>
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-stone-400 uppercase tracking-wider mb-1">Upload Logo Baru</label>
+                                        <input type="file" accept="image/*" onChange={handleLogoUpload} className="w-full text-xs text-stone-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-stone-100 file:text-stone-700 hover:file:bg-stone-200 cursor-pointer" />
+                                    </div>
+                                    <div className="border-t pt-3 mt-3">
+                                        <select className="w-full p-2 mb-2 bg-white border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" onChange={(e) => { const cust = customers.find(c => c.id === e.target.value); if(cust) setData(prev => ({...prev, customerName: cust.name, customerPhone: cust.phone})); e.target.value = ""; }}>
+                                            <option value="">-- Pilih dari Database Pelanggan --</option>
+                                            {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                        </select>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div className="col-span-2 relative">
+                                                <input type="text" name="customerName" value={data.customerName} onChange={handleDataChange} placeholder="Nama Pelanggan (Manual)" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                                <button onClick={saveToCustomerDB} title="Simpan sebagai pelanggan baru" className="absolute right-1 top-1 bottom-1 px-3 bg-yellow-50 text-yellow-700 rounded hover:bg-yellow-100 flex items-center text-xs font-bold border border-yellow-200"><i data-lucide="save" className="w-3.5 h-3.5 mr-1"></i> Simpan</button>
+                                            </div>
+                                            <div className="col-span-2"><input type="text" name="customerPhone" value={data.customerPhone} onChange={handleDataChange} placeholder="No. WhatsApp (62...)" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" /></div>
+                                            <input type="text" name="orderType" value={data.orderType} onChange={handleDataChange} placeholder="Jenis Order" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                            <input type="date" name="orderDate" value={data.orderDate} onChange={handleDataChange} className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Items */}
+                                <div className="space-y-3 bg-white p-4 rounded-xl shadow-sm border border-stone-100">
+                                    <h3 className="font-bold text-stone-700 text-sm flex items-center border-b pb-2 text-yellow-600"><i data-lucide="shopping-bag" className="mr-2 h-4 w-4"></i> ITEM PESANAN</h3>
+                                    <div className="space-y-3">
+                                        {items.map((item, index) => {
+                                            const prodInfo = products.find(p => p.id === item.productId);
+                                            const isStokKurang = prodInfo && (prodInfo.stock - item.qty) < 0;
+                                            return (
+                                                <div key={item.id} className={`p-3 border rounded-lg space-y-2 relative ${isStokKurang ? 'border-red-300 bg-red-50' : 'border-stone-200 bg-stone-50'}`}>
+                                                    <div className="flex justify-between items-center"><span className="text-[10px] font-bold text-stone-400 uppercase">Item #{index + 1}</span><button onClick={() => removeItem(item.id)} className="text-red-500"><i data-lucide="x" className="h-4 w-4"></i></button></div>
+                                                    <select value={item.productId} onChange={(e) => handleItemChange(item.id, 'productId', e.target.value)} className="w-full p-2 bg-white border border-stone-200 rounded text-sm font-medium focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500">
+                                                        <option value="">-- Pilih dari Master Stok --</option>
+                                                        {products.map(p => <option key={p.id} value={p.id}>{p.name} (Stok: {p.stock} {p.unit})</option>)}
+                                                    </select>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <div>
+                                                            <label className="text-[10px] text-stone-500">Qty ({item.unit || 'Pcs'})</label>
+                                                            <input type="number" value={item.qty} onChange={(e) => handleItemChange(item.id, 'qty', e.target.value)} className="w-full p-2 bg-white border border-stone-200 rounded text-sm text-center focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                                            {prodInfo && <p className={`text-[9px] mt-0.5 ${isStokKurang ? 'text-red-600 font-bold' : 'text-stone-400'}`}>Sisa Stok: {prodInfo.stock - item.qty}</p>}
+                                                        </div>
+                                                        <div>
+                                                            <label className="text-[10px] text-stone-500">Harga Jual (Rp)</label>
+                                                            <input type="number" value={item.price} onChange={(e) => handleItemChange(item.id, 'price', e.target.value)} className="w-full p-2 bg-white border border-stone-200 rounded text-sm text-right focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                                            {item.hpp > 0 && <p className="text-[9px] mt-0.5 text-stone-400 text-right">HPP: {formatRupiah(item.hpp)}</p>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <button onClick={addItem} className="w-full py-2 border border-dashed border-stone-300 text-stone-600 rounded-lg hover:bg-stone-100 hover:border-yellow-400 hover:text-yellow-600 transition-colors text-xs font-bold flex justify-center items-center gap-1"><i data-lucide="plus" className="h-4 w-4"></i> Tambah Item</button>
+                                </div>
+
+                                {/* Pembayaran */}
+                                <div className="space-y-3 bg-white p-4 rounded-xl shadow-sm border border-stone-100">
+                                    <div className="grid grid-cols-2 gap-2 border-b pb-3 mb-2">
+                                        <div><label className="block text-[11px] font-bold text-stone-400 uppercase tracking-wider mb-1">Deposit (DP)</label><input type="number" name="dpAmount" value={data.dpAmount} onChange={handleDataChange} className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" /></div>
+                                        <div><label className="block text-[11px] font-bold text-stone-400 uppercase tracking-wider mb-1">Tanggal DP</label><input type="date" name="dpDate" value={data.dpDate} onChange={handleDataChange} className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" /></div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <input type="text" name="bankName" value={data.bankName} onChange={handleDataChange} placeholder="Bank" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                        <input type="text" name="bankNumber" value={data.bankNumber} onChange={handleDataChange} placeholder="No Rekening" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" />
+                                        <div className="col-span-2"><input type="text" name="bankAccountName" value={data.bankAccountName} onChange={handleDataChange} placeholder="Atas Nama" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-sm focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500" /></div>
+                                    </div>
+                                    <textarea name="notes" value={data.notes} onChange={handleDataChange} rows="2" placeholder="Catatan Invoice" className="w-full p-2 bg-stone-50 border border-stone-200 rounded text-xs mt-2 focus:ring-1 focus:border-yellow-500 focus:ring-yellow-500"></textarea>
+                                </div>
+
+                                {/* Integrasi Google Sheets */}
+                                <div className="space-y-3 bg-blue-50 p-4 rounded-xl border border-blue-100">
+                                    <h3 className="font-bold text-blue-800 text-sm flex items-center border-b border-blue-200 pb-2"><i data-lucide="cloud" className="mr-2 h-4 w-4"></i> INTEGRASI GOOGLE SHEETS</h3>
+                                    <div>
+                                        <label className="block text-[10px] text-blue-600 mb-1">Masukkan Webhook URL Apps Script:</label>
+                                        <input type="text" name="webhookUrl" value={data.webhookUrl} onChange={handleDataChange} placeholder="https://script.google.com/macros/s/..." className="w-full p-2 bg-white border border-blue-200 rounded text-xs focus:ring-1 focus:ring-blue-500" />
+                                    </div>
+                                </div>
+
+                                {/* Laba Kotor */}
+                                <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-200 shadow-inner">
+                                    <h3 className="font-bold text-emerald-800 text-sm flex items-center mb-3"><i data-lucide="trending-up" className="mr-2 h-4 w-4"></i> ANALISIS LABA KOTOR (Hanya Admin)</h3>
+                                    <div className="space-y-1.5 text-xs text-emerald-900">
+                                        <div className="flex justify-between"><span>Total Penjualan:</span> <span className="font-bold">{formatRupiah(subtotal)}</span></div>
+                                        <div className="flex justify-between text-red-600"><span>Total Modal (HPP):</span> <span>-{formatRupiah(totalHPP)}</span></div>
+                                        <div className="flex justify-between font-black text-sm border-t border-emerald-300 pt-1.5 mt-1.5">
+                                            <span>Estimasi Laba:</span>
+                                            <span className={profit >= 0 ? 'text-emerald-700' : 'text-red-600'}>{formatRupiah(profit)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+                            
+                            {/* Actions Editor */}
+                            <div className="p-3 bg-white border-t border-stone-200 shrink-0 flex gap-2 overflow-x-auto whitespace-nowrap">
+                                <button onClick={deductStock} className="flex-1 py-2.5 px-3 bg-gradient-to-r from-yellow-500 to-yellow-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-1.5 hover:from-yellow-600 hover:to-yellow-700 min-w-[120px] transition"><i data-lucide="package-minus" className="w-4 h-4"></i> Potong Stok</button>
+                                <button onClick={sendWhatsApp} className="flex-1 py-2.5 px-3 bg-green-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-1.5 hover:bg-green-700 min-w-[80px] transition"><i data-lucide="message-circle" className="w-4 h-4"></i> WA</button>
+                                <button onClick={copyToClipboard} className="flex-1 py-2.5 px-3 bg-amber-500 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-1.5 hover:bg-amber-600 min-w-[80px] transition"><i data-lucide="copy" className="w-4 h-4"></i> Salin</button>
+                                <button onClick={saveToSheet} className="flex-1 py-2.5 px-3 bg-blue-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-1.5 hover:bg-blue-700 min-w-[90px] transition"><i data-lucide="cloud-upload" className="w-4 h-4"></i> Sheet</button>
+                                <button onClick={() => setActiveTab('preview')} className="flex-1 py-2.5 px-3 bg-stone-800 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-1.5 md:hidden min-w-[80px] transition"><i data-lucide="eye" className="w-4 h-4"></i> Lihat</button>
+                            </div>
+                        </div>
+
+                        {}
+                        {/* TAB 4: INVOICE PREVIEW */}
+                        <div className={`w-full md:w-7/12 lg:w-8/12 bg-stone-200 overflow-y-auto p-4 sm:p-8 flex flex-col items-center justify-start ${activeTab === 'preview' ? 'flex' : 'hidden md:flex'}`}>
+                            
+                            <div className="w-full max-w-[750px] mb-4 flex flex-col gap-2 no-print md:hidden">
+                                <button onClick={deductStock} className="w-full py-3 bg-gradient-to-r from-yellow-500 to-yellow-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-2 hover:from-yellow-600 hover:to-yellow-700 transition"><i data-lucide="package-minus" className="w-4 h-4"></i> Selesaikan & Potong Stok</button>
+                                <div className="flex gap-2">
+                                    <button onClick={sendWhatsApp} className="flex-1 py-3 bg-green-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-2 transition"><i data-lucide="message-circle" className="w-4 h-4"></i> Kirim WA</button>
+                                    <button onClick={copyToClipboard} className="flex-1 py-3 bg-amber-500 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-2 transition"><i data-lucide="copy" className="w-4 h-4"></i> Salin Teks</button>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={shareAsImage} className="flex-1 py-3 bg-purple-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-2 transition"><i data-lucide="share-2" className="w-4 h-4"></i> Gambar</button>
+                                    <button onClick={saveToSheet} className="flex-1 py-3 bg-blue-600 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-2 transition"><i data-lucide="cloud-upload" className="w-4 h-4"></i> Simpan Sheet</button>
+                                </div>
+                                <button onClick={() => window.print()} className="w-full py-3 bg-stone-800 text-white text-xs font-bold rounded-lg shadow flex justify-center items-center gap-2 transition hover:bg-stone-900"><i data-lucide="printer" className="w-4 h-4"></i> Cetak PDF</button>
+                            </div>
+
+                            {/* KERTAS INVOICE */}
+                            <div id="invoice-preview" className="bg-white w-full max-w-[750px] shadow-2xl p-6 sm:p-10 text-xs sm:text-sm relative text-stone-800">
+                                <div className="flex justify-between items-start mb-6 border-b-2 border-yellow-500 pb-4">
+                                    <div>
+                                        <h1 className="text-2xl sm:text-4xl font-black text-black tracking-wider mb-2">INVOICE</h1>
+                                        <div className="space-y-0.5 text-stone-600">
+                                            <p className="font-bold text-yellow-600 text-sm sm:text-base">Copnroll.id</p>
+                                            <p>No. 085852066690</p>
+                                            <p>Instagram: @copnroll.id</p>
+                                        </div>
+                                    </div>
+                                    <div className="w-40 h-20 flex items-center justify-end">
+                                        {data.logo ? <img src={data.logo} alt="Logo" className="max-w-full max-h-full object-contain" /> : <div className="w-full h-16 bg-stone-50 border border-stone-200 flex items-center justify-center rounded text-[10px] text-stone-400 italic">Logo Copnroll</div>}
+                                    </div>
+                                </div>
+
+                                <div className="flex justify-between mb-8">
+                                    <div>
+                                        <p className="text-yellow-600 font-bold text-[11px] uppercase tracking-wider mb-1">Ditagihkan Kepada</p>
+                                        <p className="font-bold text-base sm:text-lg text-stone-900">{data.customerName || '-'}</p>
+                                        <p className="text-stone-500 mt-0.5">WA: {data.customerPhone}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="font-bold text-stone-900">Jenis: <span className="text-yellow-600">{data.orderType || '-'}</span></p>
+                                        <p className="text-stone-500 mt-1">Tanggal: {data.orderDate ? new Date(data.orderDate).toLocaleDateString('id-ID', {day: '2-digit', month: 'long', year: 'numeric'}) : '-'}</p>
+                                    </div>
+                                </div>
+
+                                <table className="w-full mb-8">
+                                    <thead>
+                                        <tr className="bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-600 text-white font-bold uppercase text-[11px]">
+                                            <th className="py-2.5 px-3 text-center w-10">No</th>
+                                            <th className="py-2.5 px-3 text-left">Deskripsi Produk</th>
+                                            <th className="py-2.5 px-3 text-center w-16">Qty</th>
+                                            <th className="py-2.5 px-3 text-right w-28">Harga</th>
+                                            <th className="py-2.5 px-3 text-right w-32">Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {items.map((item, index) => (
+                                            <tr key={item.id} className={`${index % 2 !== 0 ? 'bg-yellow-50/40' : 'bg-white'} border-b border-stone-100`}>
+                                                <td className="py-3 px-3 text-center text-stone-400">{index + 1}</td>
+                                                <td className="py-3 px-3 font-medium text-stone-900">{item.name || '-'}</td>
+                                                <td className="py-3 px-3 text-center font-bold">{item.qty} <span className="text-[10px] font-normal text-stone-500">{item.unit}</span></td>
+                                                <td className="py-3 px-3 text-right text-stone-600">{formatRupiah(item.price)}</td>
+                                                <td className="py-3 px-3 text-right font-bold text-stone-900">{formatRupiah(item.qty * item.price)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 mt-4">
+                                    <div className="space-y-5 order-2 sm:order-1">
+                                        <div>
+                                            <p className="text-yellow-600 font-bold text-[11px] uppercase tracking-wider mb-1">Info Pembayaran</p>
+                                            <div className="bg-stone-50 p-3 rounded-lg border border-stone-100">
+                                                <p className="font-bold text-stone-900 text-sm">{data.bankName}</p>
+                                                <p className="font-mono text-base font-bold text-stone-800 tracking-wider my-1">{data.bankNumber}</p>
+                                                <p className="text-xs text-stone-600">a/n {data.bankAccountName}</p>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <p className="text-yellow-600 font-bold text-[11px] uppercase tracking-wider mb-1">Catatan</p>
+                                            <div className="text-xs text-stone-600 whitespace-pre-line leading-relaxed italic">{data.notes}</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="order-1 sm:order-2 flex flex-col justify-between items-end">
+                                        <div className="w-full max-w-[250px] space-y-2 border-t sm:border-t-0 border-stone-100 pt-4 sm:pt-0">
+                                            <div className="flex justify-between text-stone-600"><span>Subtotal</span><span className="font-medium">{formatRupiah(subtotal)}</span></div>
+                                            <div className="flex justify-between text-stone-600"><span>DP <span className="text-[10px]">({data.dpDate ? new Date(data.dpDate).toLocaleDateString('id-ID', {day: '2-digit', month: 'short'}) : ''})</span></span><span className="text-yellow-600 font-medium">-{formatRupiah(data.dpAmount)}</span></div>
+                                            <div className="flex justify-between font-black text-lg border-t-2 border-stone-800 pt-2 mt-2 text-stone-900"><span>Sisa Tagihan</span><span className="text-yellow-600">{formatRupiah(remainingTotal)}</span></div>
+                                        </div>
+                                        <div className="text-center w-40 pt-8 hidden sm:block">
+                                            <div className="h-16 border-b border-stone-400 mb-2 flex items-end justify-center relative"><svg className="absolute w-32 h-16 opacity-40 bottom-0" viewBox="0 0 100 50" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M10 35 C 20 20, 30 40, 40 15 S 50 45, 60 20 S 70 35, 80 10 M 80 10 L 85 45" stroke="black" strokeWidth="1" strokeLinecap="round"/></svg></div>
+                                            <p className="font-bold text-stone-900 text-sm">{data.signatureName}</p>
+                                            <p className="text-[10px] text-stone-500">Copnroll.id</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="hidden md:flex flex-wrap justify-center gap-4 mt-6 no-print">
+                                <button onClick={deductStock} className="px-6 py-2.5 bg-gradient-to-r from-yellow-500 to-yellow-600 text-white font-bold rounded-xl shadow-lg hover:from-yellow-600 hover:to-yellow-700 transition flex items-center gap-2"><i data-lucide="package-minus" className="w-4 h-4"></i> Selesaikan & Potong Stok</button>
+                                <button onClick={sendWhatsApp} className="px-6 py-2.5 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition flex items-center gap-2"><i data-lucide="message-circle" className="w-4 h-4"></i> WA</button>
+                                <button onClick={copyToClipboard} className="px-6 py-2.5 bg-amber-500 text-white font-bold rounded-xl shadow-lg hover:bg-amber-600 transition flex items-center gap-2"><i data-lucide="copy" className="w-4 h-4"></i> Salin</button>
+                                <button onClick={shareAsImage} className="px-6 py-2.5 bg-purple-600 text-white font-bold rounded-xl shadow-lg hover:bg-purple-700 transition flex items-center gap-2"><i data-lucide="image" className="w-4 h-4"></i> Gambar</button>
+                                <button onClick={saveToSheet} className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition flex items-center gap-2"><i data-lucide="cloud-upload" className="w-4 h-4"></i> Simpan ke Sheet</button>
+                                <button onClick={() => window.print()} className="px-6 py-2.5 bg-stone-800 text-white font-bold rounded-xl shadow-lg hover:bg-stone-900 transition flex items-center gap-2"><i data-lucide="printer" className="w-4 h-4"></i> Cetak / PDF</button>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
